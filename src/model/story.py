@@ -38,198 +38,9 @@ load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-class Response(BaseModel):
-    """Final response to the question being asked"""
-
-    answer: str = Field(description="The final answer to respond to the user")
-    sources: List[int] = Field(
-        description="List of page chunks that contain answer to the question. Only include a page chunk if it contains relevant information"
-)
-
 class Story():
     def __init__(self):
-        self.Response = Response
         self.client = OpenAI(api_key=OPENAI_API_KEY)
-    
-    def get_data_from_csv(self, file_path):
-        """ Get data from csv file """
-        loader = CSVLoader(
-            file_path=file_path,
-            encoding = 'UTF-8'
-        )
-        data = loader.load()
-        return data
-    
-    def get_data_from_web(self, url):
-        """ Get data from web """
-        loader = WebBaseLoader(url)
-        data = loader.load()
-        return data
-    
-    def get_data_from_dataframe(self, data):
-        """ Get multi data  """
-        # docs = []
-        # for data in datas:
-        #     loader = DataFrameLoader(data, page_content_column="text")
-        #     data = loader.lazy_load()
-        #     docs.append(data)
-        loader = DataFrameLoader(data, page_content_column="text")
-        data = loader.lazy_load()
-        return data
-    
-    def get_mulit_data_from_dataframe(self, datas):
-        """ Get multi data  """
-        docs = []
-        for data in datas:
-            loader = DataFrameLoader(data, page_content_column="text")
-            data = loader.lazy_load()
-            docs.extend(data)
-        return docs
-        
-    def get_text_splitter(self, docs):
-        """ Split text """
-        text_splitter = CharacterTextSplitter(chunk_size=200, chunk_overlap=10)
-        documents = text_splitter.split_documents(docs)
-        return documents
-    
-    def get_cached_embedder(self):
-        """ Get cached embedder -> Speed up """""
-        underlying_embeddings = OpenAIEmbeddings(
-            openai_api_key=OPENAI_API_KEY)
-        store = LocalFileStore("./cache/")
-        cached_embedder = CacheBackedEmbeddings.from_bytes_store(
-            underlying_embeddings, store, namespace=underlying_embeddings.model
-        )
-        return cached_embedder
-    
-    def get_embeddings(self, documents, cached_embedder, collection_name="story_collection"):
-        vectorstore = Chroma.from_documents(
-            documents, 
-            cached_embedder,
-            collection_name=collection_name)
-        return vectorstore
-    
-    def get_retriever(self, vectorstore):
-        """ Create a retriever """
-        retriever = vectorstore.as_retriever(
-            search_type="mmr",
-        )
-        return retriever
-    
-    def get_pipeline_compression_retriever(self, retriever, embeddings):
-        """ Create a pipeline of document transformers and a retriever """
-        ## filters
-        splitter = CharacterTextSplitter(chunk_size=400, chunk_overlap=20)
-        redundant_filter = EmbeddingsRedundantFilter(embeddings=embeddings)
-        relevant_filter = EmbeddingsFilter(embeddings=embeddings, similarity_threshold=0.76)
-        
-        pipeline_compressor = DocumentCompressorPipeline(
-            transformers=[splitter, redundant_filter, relevant_filter]
-        )
-        
-        compression_retriever = ContextualCompressionRetriever(
-            base_compressor=pipeline_compressor, base_retriever=retriever
-        )
-        return compression_retriever
-    
-    def get_retriever_tool(self, retriever):
-        """ Create a retriever tool """
-        retriever_tool = create_retriever_tool(
-            retriever,
-            "story-retriever",
-            "Query a retriever to get information about story",
-        )
-        return retriever_tool
-    
-    def parse(self, output):
-        if "function_call" not in output.additional_kwargs:
-            return AgentFinish(return_values={"output": output.content}, log=output.content)
-
-        function_call = output.additional_kwargs["function_call"]
-        name = function_call["name"]
-        inputs = json.loads(function_call["arguments"])
-        
-        if name == "Response":
-            return AgentFinish(return_values=inputs, log=str(function_call))
-        else:
-            return AgentActionMessageLog(
-                tool=name, tool_input=inputs, log="", message_log=[output]
-        )
-            
-    def get_agent(self, retriever_tool):
-        system_message = """
-        You are an AI responding to users searching for webtoons. 
-        Summarize the data two lines of less and answer by changing it to your own way.
-        
-        title: {title}
-        data: {data}
-        
-        You always follow these guidelines:
-            -Limit responses to two lines for clarity and conciseness
-            -You must answer in Koreans
-            -You must start with '찾으시는 작품은 {title} 입니다.'
-            -You must contains the summary of the webtoon
-        """
-        
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", system_message),
-                ("user", "{input}"),
-                MessagesPlaceholder(variable_name="agent_scratchpad"),
-            ]
-        )
-        
-        llm = ChatOpenAI(
-            # model_name="gpt-3.5-turbo-1106", 
-            model_name="gpt-4",
-            temperature=0.7, 
-            openai_api_key=OPENAI_API_KEY,
-            max_tokens=2000
-        )
-        
-        llm_with_tools = llm.bind_functions([retriever_tool, self.Response])
-        
-        agent = (
-            {
-                "title": lambda x: x["title"],
-                "data": lambda x: x["data"],
-                "input": lambda x: x["input"],
-                "agent_scratchpad": lambda x: format_to_openai_function_messages(
-                    x["intermediate_steps"]
-                ),
-            }
-            | prompt
-            | llm_with_tools
-            | self.parse
-        )
-        
-        agent_executor = AgentExecutor(tools=[retriever_tool], agent=agent, verbose=True)
-        return agent_executor
-    
-    def add_docs_to_retriever(self, retriever, docs):
-        retriever.add_documents(docs, ids=None)
-        return retriever
-            
-    def get_all_relevant_documents(self, query, retriever):
-        # Get relevant documents ordered by relevance score
-        docs = retriever.get_relevant_documents(query)
-        return docs
-    
-    def get_sub_relevant_documents(self, query, vectorstore):
-        sub_docs = vectorstore.similarity_search(query)
-        return sub_docs[0].metadata["title"]
-    
-    def make_retriever(self, datas):
-        cached_embedder = self.get_cached_embedder()
-        
-        docs = self.get_mulit_data_from_dataframe(datas)
-        documents = self.get_text_splitter(docs)
-        
-        vectorstore = self.get_embeddings(documents, cached_embedder)
-        retriever = self.get_retriever(vectorstore)
-        
-        pipeline_compression_retriever = self.get_pipeline_compression_retriever(retriever, cached_embedder)
-        return pipeline_compression_retriever
     
     def make_story_guide(self, query):
         
@@ -241,6 +52,7 @@ class Story():
             Main characters should be the one person that is the user.
             You must create a story that contains the ending and the details of the main character.
             Please create a story as detailed as possible.
+            You must refer to the famous movie or drama for the story guide.
             The target is teanagers and young adults. So, please make it suitable for them.
             You must answer in Korean.
             User's input: {query}
@@ -285,6 +97,8 @@ class Story():
             If you end the conversation, you must return the ending of the story and Do not make the choices.
             You must answer as concisely as possible.
             Use your creativity to make the story as interesting as possible.
+            You must not make the story and choices similar to the chat history. It should be unique.
+            Please make the story very interesting and engaging. Use your creativity to make the story as interesting as possible.
             The target is teenagers and young adults. So, please make it suitable for them.
             Story must follow the ending for the story guide.
             You must answer in Korean.
@@ -318,48 +132,80 @@ class Story():
         
         return response.choices[0].message.content
     
-    def run(self, query, pipeline_compression_retriever):
-        retriever_tool = self.get_retriever_tool(pipeline_compression_retriever)
-        result = self.get_all_relevant_documents(query, pipeline_compression_retriever)
+    def make_english_problem(self, query, chat_history, story_guide):
+        # print(chat_history)
+        # print(len(chat_history))
         
-        if len(result) == 0:
-            return "검색 결과가 없습니다."
-        agent_executor = self.get_agent(retriever_tool)
+        prompt = f"""
+            You are a english teacher that making a english problem based on the user's input and story guide.
+            You are a chatbot that making the english problem based on the user's input.
+            You must make a english problem that help the user to improve their english skill.
+            The users are teenagers and young adults. So, please make it suitable for them.
+            You must create the english problem based on the user's input and chat history.
+            The english problem should be helpful for the grammar, vocabulary, and reading comprehension.
+            You must refer to the famous english problem for the teenagers and young adults.
+            You should find some english conversation like 'Modern Family' or 'Friends' and change the conversation that suitable for user's input and story guide.
+            Please make the multiple english problems.
+            
+            User's input: {query}
+            Story Guide: {story_guide}
+            Chat History: {chat_history}
+            Chat History Length: {len(chat_history)}
+        """
         
-        response = agent_executor(
-            {   
-                "title": result[0].metadata["title"],
-                "data": result[0].page_content,
-                "input": query},
-            return_only_outputs=True)
-        # print(response['answer'])
-        return response['answer']
+        assistant_content = """
+            학생 답변: 마법사에게 자신의 고민을 털어놓고 도움을 청한다.
+            1. You have to tell the wizard about your worries and ask for help. What is proper sentence for this situation?
+            2. What is '도움을 청하다' in English?
+            3. What is '고민' in English? And make a simple sentence with '고민'.
+        """
+        
+        response = self.client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": query },
+                {"role": "assistant", "content": assistant_content}
+            ],
+            temperature=0.8,
+            max_tokens=2000,
+            top_p=0.8,
+            frequency_penalty=0.4,
+            presence_penalty=0.8,
+        )
+        
+        return response.choices[0].message.content
 
 if __name__ == "__main__":
     story = Story()
     # story_guide = story.make_story_guide("판타지 장르로 히어로들이 많이 나오면 좋겠어. 그리고 상대 주인공은 무조건 남자로 해줘. 배경은 2050년 이후이고, 카테고리는 액션, 판타지, 모험으로 해줘.")
     # print(story_guide)
     
-    tmp = """
-    줄거리: 2050년, 판타지와 현실이 공존하는 세상. 미래 도시에서는 슈퍼히어로들이 일반인들의 평화를 지키고 있었다. 하지만 어느 날 갑자기 나타난 악당 그룹에 의해 세상은 큰 위협을 받게 된다. 주인공인 사용자는 이를 해결하기 위해 다른 히어로들과 함께 싸우게 되며, 그 과정에서 자신만의 슈퍼 파워를 발견하게 된다.
+    # tmp = """
+    # 줄거리: 2050년, 판타지와 현실이 공존하는 세상. 미래 도시에서는 슈퍼히어로들이 일반인들의 평화를 지키고 있었다. 하지만 어느 날 갑자기 나타난 악당 그룹에 의해 세상은 큰 위협을 받게 된다. 주인공인 사용자는 이를 해결하기 위해 다른 히어로들과 함께 싸우게 되며, 그 과정에서 자신만의 슈퍼 파워를 발견하게 된다.
 
-    주인공(사용자): 소년으로 시작한 주인공은 모험을 통해 성장하며 진짜 히어로가 되어간다. 처음에는 남들과 다르다는 이유로 스스로를 외롭게 여기던 주인공이지만, 그 차이가 바로 자신만의 특별함임을 깨닫고 강력한 슈퍼 파워를 개발한다.
+    # 주인공(사용자): 소년으로 시작한 주인공은 모험을 통해 성장하며 진짜 히어로가 되어간다. 처음에는 남들과 다르다는 이유로 스스로를 외롭게 여기던 주인공이지만, 그 차이가 바로 자신만의 특별함임을 깨닫고 강력한 슈퍼 파워를 개발한다.
 
-    결말: 주인공은 마침내 악당 그룹을 물리치고 세상의 평화를 지키는데 성공한다. 그리고 그는 더 이상 자신을 외롭게 여기지 않으며, 오히려 자신의 차이를 자랑스럽게 여긴다. 그는 이제 모두에게 인정받은 히어로가 되어, 세상을 지키는 데 큰 역할을 한다.
+    # 결말: 주인공은 마침내 악당 그룹을 물리치고 세상의 평화를 지키는데 성공한다. 그리고 그는 더 이상 자신을 외롭게 여기지 않으며, 오히려 자신의 차이를 자랑스럽게 여긴다. 그는 이제 모두에게 인정받은 히어로가 되어, 세상을 지키는 데 큰 역할을 한다.
 
-    카테고리: 액션, 판타지, 모험
-    """
+    # 카테고리: 액션, 판타지, 모험
+    # """
     
-    chat_history = {}
-    query = "내용을 시작할게"
+    # chat_history = {}
+    # query = "내용을 시작할게"
     
-    for i in range(5):
-        conv = story.make_conversation(query, chat_history, tmp)
-        print("User's input: ", query)
-        print("Story: ", conv)
-        chat_history[i] = {
-            "user's input": query,
-            "story": conv
-        }
-        query = conv.split("\n")[4] # 임의로 선택
+    # for i in range(5):
+    #     conv = story.make_conversation(query, chat_history, tmp)
+    #     print("User's input: ", query)
+    #     print("Story: ", conv)
+    #     chat_history[i] = {
+    #         "user's input": query,
+    #         "story": conv
+    #     }
+    #     query = conv.split("\n")[4] # 임의로 선택
+    chat_history = [{'role': 'assistant', 'content': '안녕하세요. 대화를 통해 스토리를 만들어보세요!'}, {'role': 'user', 'content': '안녕'}, {'role': 'assistant', 'content': '            상황: 평범한 학교생활을 보내던 리아가 어느날 갑자기 히어로의 힘을 얻게 되었습니다. 그런데 이 힘은 악에게 타겟이 될 수 있는 위험한 힘이었습니다.\n\n            1. 리아는 자신의 새로운 힘을 숨기고 평범한 생활을 계속하기로 결정합니다.\n            2. 리아는 자신의 힘을 공개하고, 세상을 구하려는 결심을 합니다.\n            3. 리아는 자신의 힘에 대해 두려워하며, 도움을 청할 사람을 찾습니다.'}, {'role': 'user', 'content': '리아는 자신의 힘에 대해 두려워하며, 도움을 청할 사람을 찾습니다.'}, {'role': 'assistant', 'content': '상황: 리아는 두려움을 이기지 못해 학교의 상담선생님인 제이에게 자신의 힘에 대해 말하게 되었습니다. 그런데 제이는 사실 리아와 같은 특별한 능력을 가진 사람들을 돕는 비밀 조직의 일원이었습니다.\n\n1. 리아는 제이와 함께 비밀 조직에 들어가 스스로를 통제하는 법을 배우기로 결정합니다.\n2. 리아는 비밀 조직에 가입하는 것을 거부하고, 다른 방법으로 자신의 힘을 제어하기로 결정합니다.\n3. 리아는 자신의 힘에 대한 두려움과 혼란 속에서 아무런 결정도 내리지 못합니다.'}, {'role': 'user', 'content': '리아는 제이와 함께 비밀 조직에 들어가 스스로를 통제하는 법을 배우기로 결정합니다.'}]
+    story_guide = '스토리: "안녕"하며 인사하는 제나의 평범한 일상은 어느 날 갑자기 변합니다. 우연히 깨어난 그녀의 초능력으로 인해, 제나는 히어로가 되어버립니다. 이에 대한 부담감을 느끼지만, 주변 다른 히어로들과 친구가 되면서 점차 자신의 능력을 받아들이게 됩니다.\n\n상황: 어느 날, 제나의 마을을 파괴하려는 거대한 적이 나타납니다. \n\n선택지:\n1. 제나는 혼자서 적에 맞서 싸우려고 합니다.\n2. 제나는 다른 히어로들과 함께 적에 맞서 싸우려고 합니다.\n3. 제나는 도망치려고 합니다.'
+    
+    english_problem = story.make_english_problem("제나는 다른 히어로들과 함께 적에 맞서 싸우려고 합니다.", chat_history, story_guide)
+    print(english_problem)
         
