@@ -49,6 +49,7 @@ class Response(BaseModel):
 class Story():
     def __init__(self):
         self.Response = Response
+        self.client = OpenAI(api_key=OPENAI_API_KEY)
     
     def get_data_from_csv(self, file_path):
         """ Get data from csv file """
@@ -231,15 +232,14 @@ class Story():
         return pipeline_compression_retriever
     
     def make_story_guide(self, query):
-        client = OpenAI(api_key=OPENAI_API_KEY)
         
-        prompt = """
+        prompt = f"""
             You are a story maker.
             You are creating a story based on the user's input.
             User's input will contain the character, background, role, and category.
-            You must create a synopsis and set the detail of the main character.
-            Main characters should be two people. One is the chatbot, and the other is the user.
-            So the output must contain two main characters.
+            You must create a synopsis that contain the ending and set the detail of the main character.
+            Main characters should be the one person that is the user.
+            You must create a story that contains the ending and the details of the main character.
             Please create a story as detailed as possible.
             The target is teanagers and young adults. So, please make it suitable for them.
             You must answer in Korean.
@@ -248,12 +248,61 @@ class Story():
         
         assistant_content = """
             줄거리: 황홀한 사랑, 순수한 희망, 격렬한 열정 이 곳에서 모든 감정이 폭발한다! 꿈을 꾸는 사람들을 위한 별들의 도시 ‘라라랜드’. 재즈 피아니스트 ‘세바스찬’(라이언 고슬링)과 성공을 꿈꾸는 배우 지망생 ‘미아’(엠마 스톤). 인생에서 가장 빛나는 순간 만난 두 사람은 미완성인 서로의 무대를 만들어가기 시작한다. 로스엔젤레스를 배경으로 재즈 뮤지션을 꿈꾸는 세바스찬과 배우를 꿈꾸는 미아가 만나면서 사랑에 빠지는 이야기.
-            주인공(챗봇): 세바스찬: 라라랜드의 주인공. 재즈 피아니스트로서 자신의 음악을 추구하며 노래하는 것을 좋아한다.
-            주인공(사용자): 미아: 세바스찬의 연인. 배우를 꿈꾸며 노래하는 것을 좋아한다.
+            주인공(사용자): 미아:라라랜드의 주인공. 재즈 피아니스트로서 자신의 음악을 추구하며 노래하는 것을 좋아한다.
+            결말: 세바스찬과 미아는 결별하며, 서로의 꿈을 이루기 위해 노력하며 서로를 응원한다. 결국 미아는 성공한 배우로, 세바스찬은 재즈 피아니스트로 자신의 꿈을 이루게 된다.
             카테고리: 로맨스, 뮤지컬, 드라마
         """
         
-        response = client.chat.completions.create(
+        response = self.client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": query },
+                {"role": "assistant", "content": assistant_content}
+            ],
+            temperature=0.8,
+            max_tokens=2000,
+            top_p=0.8,
+            frequency_penalty=0.4,
+            presence_penalty=0.8,
+        )
+        
+        return response.choices[0].message.content
+    
+    def make_conversation(self, query, chat_history, story_guide):
+        # print(chat_history)
+        # print(len(chat_history))
+        
+        prompt = f"""
+            You are a story maker that making the multiple choices of the story based on the user's input and story guide.
+            You are a chatbot that making the story based on the user's input.
+            You must create the situation of some conflict and multiple choices(2 or 3) of the story based on the user's input and chat history.
+            Chat history will contain the previous conversation between the user and the chatbot.
+            You must create the story line based on the user's input and chat history.
+            The story should be interesting and engaging.
+            You must not make the story similar to the chat history. It should be unique.
+            If the chat history length is more than 5, you must return the ending of the story and stop the conversation.
+            If you end the conversation, you must return the ending of the story and Do not make the choices.
+            You must answer as concisely as possible.
+            Use your creativity to make the story as interesting as possible.
+            The target is teenagers and young adults. So, please make it suitable for them.
+            Story must follow the ending for the story guide.
+            You must answer in Korean.
+            
+            User's input: {query}
+            Story Guide: {story_guide}
+            Chat History: {chat_history}
+            Chat History Length: {len(chat_history)}
+        """
+        
+        assistant_content = """
+            상황: 세바스찬은 미아에게 자신의 꿈을 이루기 위해 떠나야 한다. 
+            1. 미아는 본인의 꿈을 버리고 세바스찬을 따라가기로 한다.
+            2. 미아는 세바스찬와 헤어지고 자신의 꿈을 이루기로 한다.
+            3. 미아와 세바스찬은 헤어지지 않고 각자의 꿈을 이루기로 한다.
+        """
+        
+        response = self.client.chat.completions.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": prompt},
@@ -288,5 +337,29 @@ class Story():
 
 if __name__ == "__main__":
     story = Story()
-    story_guide = story.make_story_guide("판타지 장르로 히어로들이 많이 나오면 좋겠어. 그리고 상대 주인공은 무조건 남자로 해줘. 배경은 2050년 이후이고, 카테고리는 액션, 판타지, 모험으로 해줘.")
-    print(story_guide)
+    # story_guide = story.make_story_guide("판타지 장르로 히어로들이 많이 나오면 좋겠어. 그리고 상대 주인공은 무조건 남자로 해줘. 배경은 2050년 이후이고, 카테고리는 액션, 판타지, 모험으로 해줘.")
+    # print(story_guide)
+    
+    tmp = """
+    줄거리: 2050년, 판타지와 현실이 공존하는 세상. 미래 도시에서는 슈퍼히어로들이 일반인들의 평화를 지키고 있었다. 하지만 어느 날 갑자기 나타난 악당 그룹에 의해 세상은 큰 위협을 받게 된다. 주인공인 사용자는 이를 해결하기 위해 다른 히어로들과 함께 싸우게 되며, 그 과정에서 자신만의 슈퍼 파워를 발견하게 된다.
+
+    주인공(사용자): 소년으로 시작한 주인공은 모험을 통해 성장하며 진짜 히어로가 되어간다. 처음에는 남들과 다르다는 이유로 스스로를 외롭게 여기던 주인공이지만, 그 차이가 바로 자신만의 특별함임을 깨닫고 강력한 슈퍼 파워를 개발한다.
+
+    결말: 주인공은 마침내 악당 그룹을 물리치고 세상의 평화를 지키는데 성공한다. 그리고 그는 더 이상 자신을 외롭게 여기지 않으며, 오히려 자신의 차이를 자랑스럽게 여긴다. 그는 이제 모두에게 인정받은 히어로가 되어, 세상을 지키는 데 큰 역할을 한다.
+
+    카테고리: 액션, 판타지, 모험
+    """
+    
+    chat_history = {}
+    query = "내용을 시작할게"
+    
+    for i in range(5):
+        conv = story.make_conversation(query, chat_history, tmp)
+        print("User's input: ", query)
+        print("Story: ", conv)
+        chat_history[i] = {
+            "user's input": query,
+            "story": conv
+        }
+        query = conv.split("\n")[4] # 임의로 선택
+        
