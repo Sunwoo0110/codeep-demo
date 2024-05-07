@@ -93,7 +93,7 @@ class Story():
             You must create the story line based on the user's input and chat history.
             The story should be interesting and engaging.
             You must not make the story similar to the chat history. It should be unique.
-            If the chat history length is more than 5, you must return the ending of the story and stop the conversation.
+            If the chat history length is more than 10, you must return the ending of the story and stop the conversation.
             If you end the conversation, you must return the ending of the story and Do not make the choices.
             You must answer as concisely as possible.
             Use your creativity to make the story as interesting as possible.
@@ -145,6 +145,7 @@ class Story():
             The english problem should be helpful for the grammar, vocabulary, and reading comprehension.
             You must refer to the famous english problem for the teenagers and young adults.
             You should find some english conversation like 'Modern Family' or 'Friends' and change the conversation that suitable for user's input and story guide.
+            The choices of the english problem should be contain the correct answer and the incorrect answer.
             Please make the multiple english problems.
             
             User's input: {query}
